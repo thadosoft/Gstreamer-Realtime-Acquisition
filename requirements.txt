@@ -1,0 +1,10 @@
+# Gstreamer-Realtime-Acquition
+# Core dependencies
+numpy
+opencv-python
+psutil
+
+# For YOLO processing (optional)
+# ultralytics
+
+# Note: PyGObject (gi) must be installed via system package manager, not pip
