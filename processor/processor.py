@@ -38,9 +38,9 @@ class YOLOProcessor(FrameProcessor):
         self.confidence = confidence
 
     def process(self, frame: np.ndarray, metadata: dict) -> np.ndarray:
-        results = self.detector.predict(
-            mode="openvino", img=frame, conf=self.confidence
-        )[0]
+        results = self.detector.predict(mode="normal", img=frame, conf=self.confidence)[
+            0
+        ]
 
         if results and hasattr(results, "boxes") and results.boxes is not None:
             for box in results.boxes:

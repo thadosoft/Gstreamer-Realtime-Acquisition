@@ -177,9 +177,9 @@ class VideoFrameCapture:
             ("depay", "parse"),
             ("parse", "tee"),
             # Display branch
-            ("tee", "queue_display"),
-            ("queue_display", "decode"),
-            ("decode", "convert"),
+            ("tee", "decode"),
+            ("decode", "queue_display"),
+            ("queue_display", "convert"),
             ("convert", "sink"),
             ("tee", "queue_record"),
             ("queue_record", "mp4mux"),
@@ -188,9 +188,9 @@ class VideoFrameCapture:
 
         main_links = [
             ("depay", "parse"),
-            ("parse", "queue_display"),
-            ("queue_display", "decode"),
-            ("decode", "convert"),
+            ("parse", "decode"),
+            ("decode", "queue_display"),
+            ("queue_display", "convert"),
             ("convert", "sink"),
         ]
 
