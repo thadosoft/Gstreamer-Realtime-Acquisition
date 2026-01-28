@@ -36,3 +36,5 @@ conda create -n gstreamer python=3.10
 conda activate gstreamer
 conda install -c conda-forge pygobject gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
 pip install -r requirements.txt
+#CHANGE USER TO CURRENT USERNAME
+sudo cp -r /usr/lib/x86_64-linux-gnu/gstreamer-1.0/* /home/USER/miniconda3/envs/gstreamer/lib/gstreamer-1.0/
