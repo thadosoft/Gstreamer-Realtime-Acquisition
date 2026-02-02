@@ -57,7 +57,7 @@ class GStreamerPipelineBuilder:
                     "queue", "queue_record"
                 )
 
-                # Videoscale để giảm resolution (nếu cần)
+                # Videoscale + capsfilter (giữ để downscale nếu cần giảm RAM/file size)
                 elements["videoscale"] = Gst.ElementFactory.make(
                     "videoscale", "videoscale"
                 )
@@ -65,75 +65,67 @@ class GStreamerPipelineBuilder:
                     "capsfilter", "capsfilter"
                 )
 
-                # Encoder H264 tối ưu
-                elements["encoder"] = Gst.ElementFactory.make("x264enc", "encoder")
-                elements["h264parse_record"] = Gst.ElementFactory.make(
-                    "h264parse", "h264parse_record"
+                # Encoder: x265enc (HEVC)
+                elements["encoder"] = Gst.ElementFactory.make("x265enc", "encoder")
+
+                # Parse HEVC
+                elements["h265parse_record"] = Gst.ElementFactory.make(
+                    "h265parse", "h265parse_record"
                 )
+
                 elements["splitmuxsink"] = Gst.ElementFactory.make(
                     "splitmuxsink", "splitmuxsink"
                 )
 
-                # ===== TỐI ƯU ENCODER ĐỂ GIẢM KÍCH THƯỚC TỐI ĐA =====
-
-                # 1. Bitrate thấp nhất có thể
+                # ===== TỐI ƯU X265ENC CHO FILE NHỎ + CHẤT LƯỢNG TỐT =====
+                # 1. CRF mode (Constant Rate Factor) – tốt nhất cho chất lượng ổn định
+                #    CRF 32–34: nén mạnh, file nhỏ, chất lượng khá (tăng lên 36–38 nếu muốn nhỏ hơn)
                 elements["encoder"].set_property(
-                    "bitrate", 2000
-                )  # 800 kbps ~ 360MB/giờ
+                    "option-string", "crf=38"
+                )  # Hoặc "crf=34" để nhỏ hơn nữa
 
-                # 2. Quantizer mode (tốt hơn bitrate mode)
-                elements["encoder"].set_property("pass", 5)  # Constant Quantizer (CQP)
+                # 2. Speed preset: slow = nén tốt hơn, vẫn real-time trên CPU mạnh
                 elements["encoder"].set_property(
-                    "quantizer", 28
-                )  # 28-32 cho kích thước nhỏ, 23-27 cho chất lượng tốt hơn
+                    "speed-preset", "fast"
+                )  # Hoặc "medium" nếu CPU load cao
+                # Các lựa chọn: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 
-                # 3. Preset và tune
-                elements["encoder"].set_property("speed-preset", "slow")
+                # 4. Keyframe interval lớn để nén tốt hơn
+                elements["encoder"].set_property("key-int-max", 120)  # ~4–5 giây @25fps
 
-                # 5. Keyframe interval lớn hơn
-                elements["encoder"].set_property(
-                    "key-int-max", 60
-                )  # Keyframe mỗi 2 giây @ 30fps
+                # 5. Tinh chỉnh thêm qua option-string (nếu cần)
+                # Ví dụ: elements["encoder"].set_property("option-string", "crf=32:psy-rd=2.0:aq-mode=3:no-sao=1")
+                #   - psy-rd=2.0: cải thiện perceptual quality
+                #   - aq-mode=3: adaptive quantization tốt
+                #   - no-sao=1: tắt SAO để giảm artifact ở một số cảnh (thử nếu thấy blocky)
 
-                # 6. B-frames (tăng nén)
-                elements["encoder"].set_property("bframes", 3)  # Số B-frames
-                elements["encoder"].set_property("b-adapt", True)  # Adaptive B-frames
+                # Nếu muốn dùng bitrate thay vì CRF (ít khuyến khích hơn)
+                # elements["encoder"].set_property("bitrate", 2000)  # kbps
+                # elements["encoder"].set_property("option-string", "vbv-maxrate=2500:vbv-bufsize=5000")
 
-                # 7. Reference frames
-                elements["encoder"].set_property(
-                    "ref", 2
-                )  # Số reference frames (thấp hơn = nhanh hơn)
-
-                # 8. Subpixel motion estimation
-                elements["encoder"].set_property(
-                    "subme", 3
-                )  # 1-11, thấp hơn = nhanh hơn nhưng lớn hơn
-
-                # 9. Rate control
-                elements["encoder"].set_property("rc-lookahead", 20)  # Lookahead frames
-                elements["encoder"].set_property("vbv-buf-capacity", 1000)  # VBV buffer
-
-                # 10. Giảm resolution (nếu camera gốc là 1080p)
-                # Uncommment nếu muốn giảm từ 1080p xuống 720p
-                # caps = Gst.Caps.from_string("video/x-raw,width=1280,height=720")
+                # Nếu downscale (rất khuyến khích cho 2560x1440 để giảm RAM + file size)
+                # caps = Gst.Caps.from_string("video/x-raw,width=1920,height=1080")  # 1080p
+                # hoặc "video/x-raw,width=1280,height=720" cho nhỏ hơn
                 # elements["capsfilter"].set_property("caps", caps)
 
-                # Hoặc giảm xuống 480p (rất nhỏ)
-                # caps = Gst.Caps.from_string("video/x-raw,width=854,height=480")
-                # elements["capsfilter"].set_property("caps", caps)
-
-                # SplitMuxSink settings
-                recording_pattern = recording_location + "video_%05d.mp4"
+                # SplitMuxSink: dùng .mkv cho HEVC (tương thích tốt hơn .mp4 ở một số player)
+                recording_pattern = recording_location + "video_%05d.mkv"
                 elements["splitmuxsink"].set_property("location", recording_pattern)
                 elements["splitmuxsink"].set_property(
                     "max-size-time", 600 * 1000000000
                 )  # 10 phút
                 elements["splitmuxsink"].set_property("send-keyframe-requests", True)
-                elements["splitmuxsink"].set_property("muxer-factory", "mp4mux")
+                elements["splitmuxsink"].set_property(
+                    "muxer-factory", "matroskamux"
+                )  # .mkv
+                # Nếu muốn .mp4: "muxer-factory", "mp4mux" (nhưng cần test seek/file size)
 
-                # Queue settings
-                elements["queue_record"].set_property("max-size-buffers", 0)
-                elements["queue_record"].set_property("max-size-time", 0)
+                # Queue: thêm leaky để tránh backlog RAM
+                elements["queue_record"].set_property("leaky", 2)  # drop old nếu đầy
+                elements["queue_record"].set_property("max-size-buffers", 5)
+                elements["queue_record"].set_property(
+                    "max-size-time", 2000000000
+                )  # ~2s
                 elements["queue_record"].set_property("max-size-bytes", 0)
             elif keep_encoding and long_record:
                 elements["tee"] = Gst.ElementFactory.make("tee", "tee")
@@ -328,17 +320,17 @@ class VideoFrameCapture:
             ("depay", "parse"),
             ("parse", "decode"),
             ("decode", "tee"),
-            # Display branch
+            # Display branch (giữ nguyên)
             ("tee", "queue_display"),
             ("queue_display", "convert"),
             ("convert", "sink"),
-            # Record branch với videoscale (nếu giảm resolution)
+            # Record branch
             ("tee", "queue_record"),
             ("queue_record", "videoscale"),
             ("videoscale", "capsfilter"),
             ("capsfilter", "encoder"),
-            ("encoder", "h264parse_record"),
-            ("h264parse_record", "splitmuxsink"),
+            ("encoder", "h265parse_record"),
+            ("h265parse_record", "splitmuxsink"),
         ]
 
         keep_encoding_links = [
