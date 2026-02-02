@@ -34,7 +34,12 @@ class GStreamerPipelineBuilder:
         return decode
 
     @staticmethod
-    def create_elements(recording_location: str, do_recording: bool) -> dict:
+    def create_elements(
+        recording_location: str,
+        do_recording: bool,
+        long_record: bool,
+        keep_encoding: bool,
+    ) -> dict:
         elements = {
             "source": Gst.ElementFactory.make("rtspsrc", "source"),
             "depay": Gst.ElementFactory.make("rtph264depay", "depay"),
@@ -46,18 +51,148 @@ class GStreamerPipelineBuilder:
         }
 
         if do_recording:
-            elements["queue_record"] = Gst.ElementFactory.make("queue", "queue_record")
-            elements["filesink"] = Gst.ElementFactory.make("filesink", "recorder")
-            elements["mp4mux"] = Gst.ElementFactory.make("mp4mux", "muxer")
-            elements["filesink"] = Gst.ElementFactory.make("filesink", "recorder")
-            elements["tee"] = Gst.ElementFactory.make("tee", "tee")
+            if long_record and not keep_encoding:
+                elements["tee"] = Gst.ElementFactory.make("tee", "tee")
+                elements["queue_record"] = Gst.ElementFactory.make(
+                    "queue", "queue_record"
+                )
 
-            recording_path = recording_location + str(time.time()) + ".mp4"
-            elements["filesink"].set_property("location", recording_path)
+                # Videoscale để giảm resolution (nếu cần)
+                elements["videoscale"] = Gst.ElementFactory.make(
+                    "videoscale", "videoscale"
+                )
+                elements["capsfilter"] = Gst.ElementFactory.make(
+                    "capsfilter", "capsfilter"
+                )
 
-            elements["queue_record"].set_property("max-size-buffers", 0)  # Nhiều buffer
-            elements["queue_record"].set_property("max-size-time", 0)  # 3 giây
-            elements["queue_record"].set_property("max-size-bytes", 0)  # 10MB
+                # Encoder H264 tối ưu
+                elements["encoder"] = Gst.ElementFactory.make("x264enc", "encoder")
+                elements["h264parse_record"] = Gst.ElementFactory.make(
+                    "h264parse", "h264parse_record"
+                )
+                elements["splitmuxsink"] = Gst.ElementFactory.make(
+                    "splitmuxsink", "splitmuxsink"
+                )
+
+                # ===== TỐI ƯU ENCODER ĐỂ GIẢM KÍCH THƯỚC TỐI ĐA =====
+
+                # 1. Bitrate thấp nhất có thể
+                elements["encoder"].set_property(
+                    "bitrate", 2000
+                )  # 800 kbps ~ 360MB/giờ
+
+                # 2. Quantizer mode (tốt hơn bitrate mode)
+                elements["encoder"].set_property("pass", 5)  # Constant Quantizer (CQP)
+                elements["encoder"].set_property(
+                    "quantizer", 28
+                )  # 28-32 cho kích thước nhỏ, 23-27 cho chất lượng tốt hơn
+
+                # 3. Preset và tune
+                elements["encoder"].set_property("speed-preset", "slow")
+
+                # 5. Keyframe interval lớn hơn
+                elements["encoder"].set_property(
+                    "key-int-max", 60
+                )  # Keyframe mỗi 2 giây @ 30fps
+
+                # 6. B-frames (tăng nén)
+                elements["encoder"].set_property("bframes", 3)  # Số B-frames
+                elements["encoder"].set_property("b-adapt", True)  # Adaptive B-frames
+
+                # 7. Reference frames
+                elements["encoder"].set_property(
+                    "ref", 2
+                )  # Số reference frames (thấp hơn = nhanh hơn)
+
+                # 8. Subpixel motion estimation
+                elements["encoder"].set_property(
+                    "subme", 3
+                )  # 1-11, thấp hơn = nhanh hơn nhưng lớn hơn
+
+                # 9. Rate control
+                elements["encoder"].set_property("rc-lookahead", 20)  # Lookahead frames
+                elements["encoder"].set_property("vbv-buf-capacity", 1000)  # VBV buffer
+
+                # 10. Giảm resolution (nếu camera gốc là 1080p)
+                # Uncommment nếu muốn giảm từ 1080p xuống 720p
+                # caps = Gst.Caps.from_string("video/x-raw,width=1280,height=720")
+                # elements["capsfilter"].set_property("caps", caps)
+
+                # Hoặc giảm xuống 480p (rất nhỏ)
+                # caps = Gst.Caps.from_string("video/x-raw,width=854,height=480")
+                # elements["capsfilter"].set_property("caps", caps)
+
+                # SplitMuxSink settings
+                recording_pattern = recording_location + "video_%05d.mp4"
+                elements["splitmuxsink"].set_property("location", recording_pattern)
+                elements["splitmuxsink"].set_property(
+                    "max-size-time", 600 * 1000000000
+                )  # 10 phút
+                elements["splitmuxsink"].set_property("send-keyframe-requests", True)
+                elements["splitmuxsink"].set_property("muxer-factory", "mp4mux")
+
+                # Queue settings
+                elements["queue_record"].set_property("max-size-buffers", 0)
+                elements["queue_record"].set_property("max-size-time", 0)
+                elements["queue_record"].set_property("max-size-bytes", 0)
+            elif keep_encoding and long_record:
+                elements["tee"] = Gst.ElementFactory.make("tee", "tee")
+                elements["queue_record"] = Gst.ElementFactory.make(
+                    "queue", "queue_record"
+                )
+
+                # Parse H264 để đảm bảo stream hợp lệ
+                elements["h264parse_record"] = Gst.ElementFactory.make(
+                    "h264parse", "h264parse_record"
+                )
+
+                # SplitFileSink để tự động chia file H264 raw
+                elements["splitfilesink"] = Gst.ElementFactory.make(
+                    "multifilesink", "splitfilesink"
+                )
+
+                # Cấu hình multifilesink
+                recording_pattern = recording_location + "video_%05d.h264"
+                elements["splitfilesink"].set_property("location", recording_pattern)
+
+                # Chia file theo thời gian hoặc kích thước
+                # Option 1: Chia theo thời gian (số frame * thời gian mỗi frame)
+                # Ví dụ: 30fps * 600s = 18000 frames = 10 phút
+                elements["splitfilesink"].set_property(
+                    "max-files", 0
+                )  # Không giới hạn số file
+                elements["splitfilesink"].set_property(
+                    "next-file", 4
+                )  # 4 = max-size mode
+                elements["splitfilesink"].set_property(
+                    "max-file-size", 100 * 1024 * 1024
+                )  # 100MB mỗi file
+
+                # Hoặc chia theo số frame (nếu biết framerate)
+                # elements["splitfilesink"].set_property("next-file", 3)  # 3 = max-duration mode
+                # elements["splitfilesink"].set_property("max-file-duration", 600 * 1000000000)  # 10 phút
+
+                # Queue settings
+                elements["queue_record"].set_property("max-size-buffers", 0)
+                elements["queue_record"].set_property("max-size-time", 0)
+                elements["queue_record"].set_property("max-size-bytes", 0)
+            else:
+                elements["queue_record"] = Gst.ElementFactory.make(
+                    "queue", "queue_record"
+                )
+                elements["filesink"] = Gst.ElementFactory.make("filesink", "recorder")
+                elements["mp4mux"] = Gst.ElementFactory.make("mp4mux", "muxer")
+                elements["filesink"] = Gst.ElementFactory.make("filesink", "recorder")
+                elements["tee"] = Gst.ElementFactory.make("tee", "tee")
+
+                recording_path = recording_location + str(time.time()) + ".mp4"
+                elements["filesink"].set_property("location", recording_path)
+
+                elements["queue_record"].set_property(
+                    "max-size-buffers", 0
+                )  # Nhiều buffer
+                elements["queue_record"].set_property("max-size-time", 0)  # 3 giây
+                elements["queue_record"].set_property("max-size-bytes", 0)  # 10MB
 
         if elements["queue_display"]:
             elements["queue_display"].set_property("max-size-buffers", 1)
@@ -134,7 +269,10 @@ class VideoFrameCapture:
     def _create_pipeline(self):
         """Create and configure the GStreamer pipeline"""
         self.elements = GStreamerPipelineBuilder.create_elements(
-            self.recording_config.path, self.do_record
+            self.recording_config.path,
+            self.do_record,
+            self.recording_config.longRecording,
+            self.recording_config.keepEnconding,
         )
         self._configure_source()
         self._configure_sink()
@@ -186,6 +324,37 @@ class VideoFrameCapture:
             ("mp4mux", "filesink"),
         ]
 
+        long_record_links = [
+            ("depay", "parse"),
+            ("parse", "decode"),
+            ("decode", "tee"),
+            # Display branch
+            ("tee", "queue_display"),
+            ("queue_display", "convert"),
+            ("convert", "sink"),
+            # Record branch với videoscale (nếu giảm resolution)
+            ("tee", "queue_record"),
+            ("queue_record", "videoscale"),
+            ("videoscale", "capsfilter"),
+            ("capsfilter", "encoder"),
+            ("encoder", "h264parse_record"),
+            ("h264parse_record", "splitmuxsink"),
+        ]
+
+        keep_encoding_links = [
+            ("depay", "parse"),
+            ("parse", "tee"),  # Tee H264 encoded stream TRƯỚC decode
+            # Display branch
+            ("tee", "decode"),
+            ("decode", "queue_display"),
+            ("queue_display", "convert"),
+            ("convert", "sink"),
+            # Record branch - LƯU H264 RAW
+            ("tee", "queue_record"),
+            ("queue_record", "h264parse_record"),
+            ("h264parse_record", "splitfilesink"),
+        ]
+
         main_links = [
             ("depay", "parse"),
             ("parse", "decode"),
@@ -194,8 +363,20 @@ class VideoFrameCapture:
             ("convert", "sink"),
         ]
 
-        if self.do_record:
+        if self.do_record and not self.recording_config.longRecording:
             main_links = record_links
+        elif (
+            self.do_record
+            and self.recording_config.longRecording
+            and not self.recording_config.keepEnconding
+        ):
+            main_links = long_record_links
+        elif (
+            self.do_record
+            and self.recording_config.keepEnconding
+            and self.recording_config.longRecording
+        ):
+            main_links = keep_encoding_links
 
         for src, dst in main_links:
             if not self.elements[src].link(self.elements[dst]):

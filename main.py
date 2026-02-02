@@ -30,8 +30,8 @@ if __name__ == "__main__":
 
     detector = ULObjectDetection(ckpt_path="YOLO", model_name="model")
     detector.export_openvino(fresh=False)
-    processors = [YOLOProcessor(detector, confidence=0.5)]
-    # processors = []
+    # processors = [YOLOProcessor(detector, confidence=0.5)]
+    processors = []
 
     capture = VideoFrameCapture(
         camera_config=camera_config,

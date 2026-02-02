@@ -18,6 +18,8 @@ class CameraConfig:
 @dataclass
 class RecordingConfig:
     cameraName: str = "dahua"
+    longRecording: bool = True
+    keepEnconding: bool = True
     path: str = "/home/deka/Videos/GST/"
     fps: int = 25
 
